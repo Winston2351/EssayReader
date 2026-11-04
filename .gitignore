@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+
+# 本地词库与生成的索引（体积大，请自行从 ECDICT 获取）
+stardict.csv
+ecdict_lookup.sqlite3
+ecdict_lookup.sqlite3-*
+ecdict_lookup.tmp
+
+# 第三方安装包
+*.exe
