@@ -11,9 +11,10 @@ from tkinter import ttk
 
 CSV_PATH = Path(os.environ.get('ECDICT_CSV', Path(__file__).with_name('stardict.csv')))
 DB_PATH = CSV_PATH.with_name('ecdict_lookup.sqlite3')
-HOTKEY_SEARCH, WM_HOTKEY = 0x4A21, 0x0312
+HOTKEY_SEARCH, HOTKEY_TOGGLE, WM_HOTKEY = 0x4A21, 0x4A22, 0x0312
 MOD_ALT, MOD_CONTROL = 0x0001, 0x0002
-VK_Q = 0x51
+VK_Q, VK_S = 0x51, 0x53
+CJK_RE = re.compile(r'[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]')
 
 
 def words_in(text):
@@ -45,15 +46,18 @@ class App:
     def __init__(self, root):
         self.root=root; root.title('PDF 生词速查 · 离线词典'); root.geometry('430x390+80+100'); root.attributes('-topmost',True)
         self.status=tk.StringVar(value='正在加载本地词典…'); self.query=tk.StringVar(); self.db=None; self.after_id=None
+        self.monitoring=True
         ttk.Label(root,text='PDF 生词速查',font=('Segoe UI',14,'bold')).pack(anchor='w',padx=12,pady=(10,2))
-        ttk.Label(root,text='PDF 中选词并复制，词典自动查；Ctrl+Alt+Q 调出查词框').pack(anchor='w',padx=12)
+        ttk.Label(root,text='PDF 中选词并复制，词典自动查；Ctrl+Alt+Q 调出窗口，Ctrl+Alt+S 暂停/恢复').pack(anchor='w',padx=12)
         row=ttk.Frame(root); row.pack(fill='x',padx=12,pady=8)
-        self.entry=ttk.Entry(row,textvariable=self.query,font=('Segoe UI',13)); self.entry.pack(fill='x',expand=True)
+        self.toggle_btn=ttk.Button(row,text='暂停监视',width=9,command=self.toggle_monitoring); self.toggle_btn.pack(side='right')
+        self.entry=ttk.Entry(row,textvariable=self.query,font=('Segoe UI',13)); self.entry.pack(side='left',fill='x',expand=True,padx=(0,6))
         self.query.trace_add('write',self.schedule_lookup)
         self.out=tk.Text(root,wrap='word',font=('Segoe UI',11),height=12); self.out.pack(fill='both',expand=True,padx=12,pady=(0,8))
         ttk.Label(root,textvariable=self.status).pack(anchor='w',padx=12,pady=(0,8))
         self.user32=ctypes.windll.user32
         self.hotkey_search=self.user32.RegisterHotKey(None,HOTKEY_SEARCH,MOD_CONTROL|MOD_ALT,VK_Q)
+        self.hotkey_toggle=self.user32.RegisterHotKey(None,HOTKEY_TOGGLE,MOD_CONTROL|MOD_ALT,VK_S)
         self.clipboard_sequence=self.user32.GetClipboardSequenceNumber()
         threading.Thread(target=self.init_index,daemon=True).start(); self.poll_hotkeys()
         root.protocol('WM_DELETE_WINDOW',self.close)
@@ -68,20 +72,35 @@ class App:
     def poll_hotkeys(self):
         msg=ctypes.wintypes.MSG()
         while self.user32.PeekMessageW(ctypes.byref(msg),None,WM_HOTKEY,WM_HOTKEY,1):
-            if msg.wParam==HOTKEY_SEARCH:
-                self.root.deiconify(); self.root.lift(); self.entry.focus_set(); self.entry.selection_range(0,'end')
+            if msg.wParam==HOTKEY_SEARCH: self.focus_window()
+            elif msg.wParam==HOTKEY_TOGGLE: self.toggle_monitoring()
         seq=self.user32.GetClipboardSequenceNumber()
         if seq != self.clipboard_sequence:
             self.clipboard_sequence=seq
-            self.root.after(120,self.read_clipboard)
+            if self.monitoring: self.root.after(120,self.read_clipboard)
         self.root.after(80,self.poll_hotkeys)
+
+    def focus_window(self):
+        self.root.deiconify(); self.root.lift(); self.entry.focus_set(); self.entry.selection_range(0,'end')
+
+    def toggle_monitoring(self):
+        self.monitoring=not self.monitoring
+        self.clipboard_sequence=self.user32.GetClipboardSequenceNumber()
+        if self.monitoring:
+            self.toggle_btn.configure(text='暂停监视'); self.status.set('监视中：复制英文后自动查询。')
+        else:
+            self.toggle_btn.configure(text='恢复监视'); self.status.set('已暂停：复制不会触发查询，Ctrl+Alt+S 恢复。')
+
+    def should_accept(self,text):
+        return self.monitoring and not CJK_RE.search(text) and bool(words_in(text))
 
     def read_clipboard(self):
         try:
             text=self.root.clipboard_get().strip()
             if not text: self.status.set('剪贴板没有文本；确认 PDF 中已选中文字，再按 Ctrl+C。'); return
-            ws=words_in(text); self.query.set(' '.join(ws) if ws else text)
-            self.root.deiconify(); self.root.lift(); self.status.set('已读取并自动查询。')
+            if not self.should_accept(text): return
+            ws=words_in(text); self.query.set(' '.join(ws))
+            self.status.set('已读取并自动查询。')
         except tk.TclError: self.status.set('没有读到剪贴板文本，请重新选择并复制。')
 
     def schedule_lookup(self,*_):
@@ -117,7 +136,7 @@ class App:
         self.out.insert('end',f'{word} {phonetic}\n{pos}\n{translation}\n{definition}')
 
     def close(self):
-        self.user32.UnregisterHotKey(None,HOTKEY_SEARCH); self.root.destroy()
+        self.user32.UnregisterHotKey(None,HOTKEY_SEARCH); self.user32.UnregisterHotKey(None,HOTKEY_TOGGLE); self.root.destroy()
 
 
 if __name__=='__main__':
